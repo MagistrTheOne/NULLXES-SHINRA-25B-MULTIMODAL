@@ -107,16 +107,17 @@ def test_audio_query_bank_is_not_a_duration_cap(config):
     model = ShinraForCausalLM(config).eval()
     # 1024 samples / (stem stride 4 * 2 * 2 * 2 frames per latent) = 32 latents.
     with torch.no_grad():
-        latents, timestamps, _ = model.multimodal.audio(torch.randn(1,1024),final=True)
+        latents, timestamps, _ = model.multimodal.audio(torch.randn(1, 1024), final=True)
     assert latents.shape[1] == 32 and len(timestamps) == 32
     assert latents.shape[1] > config.audio_query_bank_size
 
 
-def test_cpu_auto_never_queries_cuda(config,monkeypatch):
-    def forbidden(*args,**kwargs):
+def test_cpu_auto_never_queries_cuda(config, monkeypatch):
+    def forbidden(*args, **kwargs):
         raise AssertionError("CPU/reference path must not query CUDA")
-    monkeypatch.setattr(torch.cuda,"get_device_capability",forbidden)
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", forbidden)
     model = ShinraForCausalLM(config).eval()
     with torch.no_grad():
-        output = model(torch.tensor([[10,11,12]]))
-    assert output.hidden_states.shape == (1,3,config.hidden_size)
+        output = model(torch.tensor([[10, 11, 12]]))
+    assert output.hidden_states.shape == (1, 3, config.hidden_size)

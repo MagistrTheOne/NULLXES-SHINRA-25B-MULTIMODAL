@@ -2,7 +2,7 @@
 
 ## Executed in this implementation session
 
-- Final result: **27 CPU tests passed** (pytest), Ruff lint passed, all 39 Python
+- Final result: **42 CPU tests passed** (pytest), Ruff lint passed, all 44 Python
   files passed formatting checks and compileall. Environment: Python 3.11,
   environment-provided PyTorch 2.14.0+cu126. No CUDA workload was used.
 - Allocation-free audit independently returned total 25,177,818,880, core
@@ -16,6 +16,11 @@
   dimensions; short history slices cannot retain an entire prefill allocation.
 - HF adapter/native output equality, greedy cached/manual generation equality,
   offloaded/model gradient equivalence and counterfactual cache isolation.
+- CFG review verification: exact named memory matrix ledger, segment-boundary
+  output/state/gradient equivalence, architecture/runtime/training separation,
+  CPU-only dispatch selection, missing-PyTorch diagnostics and duration-dependent
+  audio latents exceeding the learned query-bank size. Last full run: 42 passed
+  in 108.96 seconds on 2026-09-22; this is test duration, not model throughput.
 
 No optimizer update on a model, training run, GPU query/workload, distributed job,
 dataset download, pretrained checkpoint download or full-size model initialization
