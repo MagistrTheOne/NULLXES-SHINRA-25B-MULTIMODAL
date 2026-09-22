@@ -16,10 +16,12 @@ are created outside the project installer and recorded by their immutable digest
 | DEV | pytest, ruff |
 | HF COMPATIBILITY | transformers supplied by the environment, optional explicit registration |
 
-Production configuration selects FA4/FLA. Ampere changes only backend dispatch to
-`flash2`; it does not change weights or architecture fingerprint. Kernels must be
-tested against the exact installed revision. Do not install optional runtimes from
-this document automatically.
+`configs/runtime.json` selects `auto` for both attention and memory. CPU uses the
+bounded reference path; CUDA memory uses the FLA operation. Attention policy uses
+FA2/cuDNN on Ampere, FA3/cuDNN/eligible FA4 on Hopper, FA4/cuDNN on Blackwell,
+with eligible FA2 fallback where installed. Kernel dispatch is not an architecture
+field and does not alter weights/fingerprint. Kernels must be tested against the
+exact installed revision. Do not install optional runtimes automatically.
 
 ## Proposed host profiles (not measured)
 

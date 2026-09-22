@@ -49,20 +49,31 @@ python -m shinra.audit
 ```
 
 This command imports no PyTorch, initializes no model and reports the exact ledger.
-The default production specification is [configs/shinra25b.json](configs/shinra25b.json).
-It selects FLA/FA4 and grouped checkpointing, but never launches anything.
+The architectural specification is [configs/shinra25b.json](configs/shinra25b.json).
+Execution dispatch is in [configs/runtime.json](configs/runtime.json); checkpointing,
+segment sizes, precision and losses are in [configs/training.json](configs/training.json).
+No setting launches a workload. See [exact memory/CFG review](specifications/cfg_review.md).
 
 ```python
-from shinra import ShinraConfig
+from shinra import ShinraConfig, ShinraRuntimeConfig, ShinraTrainingConfig
 from shinra.audit import parameter_ledger
 
 config = ShinraConfig.load("configs/shinra25b.json")
+runtime = ShinraRuntimeConfig.load("configs/runtime.json")
+training = ShinraTrainingConfig.load("configs/training.json")
 assert parameter_ledger(config)["total"] == 25_177_818_880
 ```
 
 Constructing a model above 100M parameters requires `allow_large_init=True`.
 Do not pass it without a separately approved memory/runtime plan. Merely loading
 a config or importing SHINRA performs no full-size allocation.
+When separately authorized to construct a model, pass `runtime=runtime, training=training`
+to its constructor; execution settings do not belong to the model fingerprint.
+
+The memory identity is `shinra_channel_delta_v1`, a channel-decay delta rule with
+shared scalar erase/write beta. It is not FLA's full GatedDeltaNet layer and is not
+GDN2. One mixer has exactly **149,971,008 parameters**. The 8192 training segment
+carries state and gradients; only a sequence boundary resets memory.
 
 ## Interfaces
 
@@ -75,6 +86,8 @@ a config or importing SHINRA performs no full-size allocation.
 - `predict_world`: observation slots -> action/Δt conditioning -> shared backbone
   -> future-state distribution and event/action heads.
 - `flow_matching_loss` / `sample_flow`: native visual/audio output decoders.
+- `video_flow_loss` / `sample_video`: temporal conditioning + shared visual decoder;
+  requires per-frame latent conditions, not a text-to-video latent planner.
 - `prefill` / `generate`: chunked prefill and bounded-context text generation.
 - `ShinraCache`: branch/reset/serialize recurrence, KV and modality/world side state.
 - `save_checkpoint` / `load_checkpoint`: strict sharded safetensors with hashes.
@@ -84,6 +97,8 @@ a config or importing SHINRA performs no full-size allocation.
 See [contracts](specifications/contracts.md) before constructing datasets or serving
 streams. The tokenizer wrapper accepts only local, hashed SentencePiece Unigram
 artifacts with byte fallback and exactly the configured vocabulary.
+`131072` includes the 256 reserved controls `[130816,131071]`. Audio's 128 learned
+queries form a cyclic bank; output duration scales at 12.5 latents/s, not 128/clip.
 
 ## Precision and scaling
 

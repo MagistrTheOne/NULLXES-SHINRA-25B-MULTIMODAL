@@ -1,5 +1,4 @@
 import json
-from dataclasses import replace
 import pytest
 import torch
 from shinra.model import ShinraForCausalLM
@@ -8,6 +7,7 @@ from shinra.multimodal.stream import TextSegment, LatentSegment, assemble_stream
 from shinra.training.curriculum import ReplaySampler, CapabilityCycle, regression_gate
 from shinra.training.offload import CPUAdamW
 from shinra.evaluation import effective_context
+from shinra.settings import ShinraRuntimeConfig
 
 
 def test_checkpoint_roundtrip_and_corruption(config, tmp_path):
@@ -34,7 +34,7 @@ def test_stream_mask_and_backprop(config):
     latents = model.multimodal.image(torch.randn(1, 3, 8, 8), 4)
     segments = [
         TextSegment(torch.tensor([[10, 11, 12]])),
-        LatentSegment(latents, "visual", 1, 2, 3, torch.zeros(1, 4, 3)),
+        LatentSegment(latents, "visual", 1, 56, 57, torch.zeros(1, 4, 3)),
         TextSegment(torch.tensor([[13, 14]])),
     ]
     stream = assemble_stream(model, segments)
@@ -58,7 +58,7 @@ def test_context_and_reference_guards(config):
     model = ShinraForCausalLM(config)
     with pytest.raises(ValueError, match="context"):
         model(torch.zeros(1, 129, dtype=torch.long))
-    guarded = ShinraForCausalLM(replace(config, reference_max_tokens=4))
+    guarded = ShinraForCausalLM(config, runtime=ShinraRuntimeConfig(reference_backend_max_tokens=4))
     with pytest.raises(RuntimeError, match="Reference recurrence"):
         guarded(torch.zeros(1, 5, dtype=torch.long))
 

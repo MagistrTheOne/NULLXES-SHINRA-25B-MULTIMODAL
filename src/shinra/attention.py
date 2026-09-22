@@ -4,12 +4,14 @@ from .normalization import RMSNorm
 from .positions import rotary
 from .kernels import attention
 from .cache import GlobalKV
+from .settings import ShinraRuntimeConfig
 
 
 class ShinraGlobalAttention(nn.Module):
-    def __init__(self, c):
+    def __init__(self, c, runtime=None):
         super().__init__()
         self.config = c
+        self.runtime = runtime or ShinraRuntimeConfig()
         h, kv = c.hidden_size, c.num_key_value_heads * c.head_dim
         self.q = nn.Linear(h, h, bias=False)
         self.k = nn.Linear(h, kv, bias=False)
@@ -28,6 +30,11 @@ class ShinraGlobalAttention(nn.Module):
         if state is not None:
             k, v = torch.cat((state.key, k), dim=1), torch.cat((state.value, v), dim=1)
         y = attention(
-            q, k, v, backend=c.attention_backend, offset=offset, reference_limit=c.reference_max_tokens
+            q,
+            k,
+            v,
+            backend=self.runtime.attention_backend,
+            offset=offset,
+            reference_limit=self.runtime.reference_backend_max_tokens,
         )
         return self.o(y.flatten(-2)), GlobalKV(k, v)

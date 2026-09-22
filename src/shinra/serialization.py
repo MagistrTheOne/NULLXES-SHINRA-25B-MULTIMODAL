@@ -29,6 +29,8 @@ def save_checkpoint(model, directory, *, optimizer=None, training_state=None, sh
     temporary = destination.with_name(destination.name + ".incomplete-" + uuid.uuid4().hex)
     temporary.mkdir(parents=True)
     model.config.save(temporary / "config.json")
+    model.runtime.save(temporary / "runtime.json")
+    model.training_config.save(temporary / "training.json")
     index, hashes, shard = {}, {}, {}
     size, number = 0, 0
 
@@ -53,7 +55,7 @@ def save_checkpoint(model, directory, *, optimizer=None, training_state=None, sh
         size += nbytes
     flush()
     state = dict(training_state or {})
-    (temporary / "training.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+    (temporary / "trainer_state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
     if optimizer is not None:
         torch.save(optimizer.state_dict(), temporary / "optimizer.pt")
         hashes["optimizer.pt"] = _sha256(temporary / "optimizer.pt")
@@ -62,10 +64,10 @@ def save_checkpoint(model, directory, *, optimizer=None, training_state=None, sh
         rng["cuda"] = torch.cuda.get_rng_state_all()
     torch.save(rng, temporary / "rng.pt")
     hashes["rng.pt"] = _sha256(temporary / "rng.pt")
-    for name in ("config.json", "training.json"):
+    for name in ("config.json", "runtime.json", "training.json", "trainer_state.json"):
         hashes[name] = _sha256(temporary / name)
     manifest = {
-        "format": "shinra-safetensors-v1",
+        "format": "shinra-safetensors-v2",
         "fingerprint": model.config.fingerprint(),
         "weight_map": index,
         "sha256": hashes,
@@ -79,7 +81,7 @@ def load_checkpoint(model, directory, *, optimizer=None, restore_rng=False, veri
 
     root = Path(directory).resolve()
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-    if manifest["format"] != "shinra-safetensors-v1" or manifest["fingerprint"] != model.config.fingerprint():
+    if manifest["format"] != "shinra-safetensors-v2" or manifest["fingerprint"] != model.config.fingerprint():
         raise ValueError("Incompatible checkpoint contract")
 
     def checked(name):
@@ -118,4 +120,4 @@ def load_checkpoint(model, directory, *, optimizer=None, restore_rng=False, veri
             if not torch.cuda.is_initialized():
                 raise RuntimeError("CUDA RNG restoration requires an initialized matching runtime")
             torch.cuda.set_rng_state_all(rng["cuda"])
-    return json.loads((root / "training.json").read_text(encoding="utf-8"))
+    return json.loads((root / "trainer_state.json").read_text(encoding="utf-8"))

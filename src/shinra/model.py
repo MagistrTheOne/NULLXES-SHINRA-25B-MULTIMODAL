@@ -1,6 +1,5 @@
 from dataclasses import dataclass
-import torch
-from torch import nn
+from .torch_runtime import torch, nn
 from .checkpointing import activation_checkpoint
 from .config import ShinraConfig
 from .audit import parameter_ledger
@@ -10,6 +9,7 @@ from .cache import ShinraCache
 from .losses import chunked_cross_entropy, selected_log_probs
 from .multimodal import ShinraMultimodal
 from .world import ShinraWorldModel
+from .settings import ShinraRuntimeConfig, ShinraTrainingConfig
 
 
 @dataclass
@@ -24,14 +24,18 @@ class ShinraOutput:
 class ShinraForCausalLM(nn.Module):
     """Single native family. Large allocation requires an explicit opt-in."""
 
-    def __init__(self, config=None, *, allow_large_init=False):
+    def __init__(self, config=None, *, runtime=None, training=None, allow_large_init=False):
         super().__init__()
         self.config = config or ShinraConfig()
+        self.runtime = runtime or ShinraRuntimeConfig()
+        self.training_config = training or ShinraTrainingConfig()
         c = self.config
         if parameter_ledger(c)["total"] > 100_000_000 and not allow_large_init:
             raise RuntimeError("Large model allocation requires allow_large_init=True; audit needs no model")
         self.embed_tokens = nn.Embedding(c.vocab_size, c.hidden_size)
-        self.layers = nn.ModuleList([ShinraBlock(c, kind) for kind in c.layer_types])
+        self.layers = nn.ModuleList(
+            [ShinraBlock(c, kind, self.runtime, self.training_config) for kind in c.layer_types]
+        )
         self.norm = RMSNorm(c.hidden_size, c.norm_eps)
         self.multimodal = ShinraMultimodal(c)
         self.world = ShinraWorldModel(c)
@@ -82,9 +86,10 @@ class ShinraForCausalLM(nn.Module):
         current = cache or ShinraCache(c.fingerprint(), c.cache_version)
         current.validate(c, x.shape[1])
         updated = current.fork() if use_cache else None
-        if c.gradient_checkpointing and self.training and torch.is_grad_enabled():
-            for start in range(0, len(self.layers), c.checkpoint_group_size):
-                group = tuple(self.layers[start : start + c.checkpoint_group_size])
+        policy = self.training_config
+        if policy.gradient_checkpointing and self.training and torch.is_grad_enabled():
+            for start in range(0, len(self.layers), policy.checkpoint_group_size):
+                group = tuple(self.layers[start : start + policy.checkpoint_group_size])
 
                 def run_group(value, blocks=group):
                     for block in blocks:
@@ -112,19 +117,23 @@ class ShinraForCausalLM(nn.Module):
             if labels.shape != x.shape[:2] or x.shape[1] < 2:
                 raise ValueError("Causal labels must match the sequence and contain at least two positions")
             loss, count = chunked_cross_entropy(
-                x[:, :-1], self.lm_head_weight, labels[:, 1:], chunk_size=c.loss_chunk_size, z_loss=c.z_loss
+                x[:, :-1],
+                self.lm_head_weight,
+                labels[:, 1:],
+                chunk_size=policy.loss_chunk_size,
+                z_loss=policy.z_loss,
             )
-        if not 0 <= logits_to_keep <= c.loss_chunk_size:
+        if not 0 <= logits_to_keep <= policy.loss_chunk_size:
             raise ValueError("Logits output is bounded; use iter_logits for larger requests")
         logits = nn.functional.linear(x[:, -logits_to_keep:], self.lm_head_weight) if logits_to_keep else None
         return ShinraOutput(x, loss, count, logits, updated)
 
     def iter_logits(self, hidden):
-        for part in hidden.split(self.config.loss_chunk_size, dim=1):
+        for part in hidden.split(self.training_config.loss_chunk_size, dim=1):
             yield nn.functional.linear(part, self.lm_head_weight)
 
     def log_probs(self, hidden, targets):
-        return selected_log_probs(hidden, self.lm_head_weight, targets, self.config.loss_chunk_size)
+        return selected_log_probs(hidden, self.lm_head_weight, targets, self.training_config.loss_chunk_size)
 
     @torch.no_grad()
     def prefill(self, input_ids=None, *, inputs_embeds=None, cache=None, chunk_size=1024):

@@ -6,13 +6,17 @@ from shinra import ShinraConfig
 from shinra.audit import parameter_ledger
 from shinra.model import ShinraForCausalLM
 from shinra.training.offload import CPUAdamW
+from shinra.settings import ShinraRuntimeConfig, ShinraTrainingConfig
 
 
 def test_published_config_and_ledger():
     root = Path(__file__).parents[1]
     config = ShinraConfig.load(root / "configs/shinra25b.json")
     assert config.max_context_length == 327680
-    assert config.memory_backend == "fla" and config.attention_backend == "flash4"
+    runtime = ShinraRuntimeConfig.load(root / "configs/runtime.json")
+    training = ShinraTrainingConfig.load(root / "configs/training.json")
+    assert runtime.attention_backend == "auto" and runtime.memory_backend == "auto"
+    assert training.gradient_checkpointing and training.memory_train_segment_size == 8192
     assert parameter_ledger(config) == json.loads((root / "specifications/parameter_ledger.json").read_text())
 
 

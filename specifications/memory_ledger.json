@@ -1,0 +1,100 @@
+{
+  "type": "shinra_channel_delta_v1",
+  "rule": "coupled_delta",
+  "parameters": {
+    "q.weight": {
+      "shape": [
+        4096,
+        7168
+      ],
+      "parameters": 29360128
+    },
+    "k.weight": {
+      "shape": [
+        4096,
+        7168
+      ],
+      "parameters": 29360128
+    },
+    "v.weight": {
+      "shape": [
+        4096,
+        7168
+      ],
+      "parameters": 29360128
+    },
+    "o.weight": {
+      "shape": [
+        7168,
+        4096
+      ],
+      "parameters": 29360128
+    },
+    "output_gate.weight": {
+      "shape": [
+        4096,
+        7168
+      ],
+      "parameters": 29360128
+    },
+    "gate_down.weight": {
+      "shape": [
+        256,
+        7168
+      ],
+      "parameters": 1835008
+    },
+    "decay_up.weight": {
+      "shape": [
+        4096,
+        256
+      ],
+      "parameters": 1048576
+    },
+    "beta.weight": {
+      "shape": [
+        32,
+        7168
+      ],
+      "parameters": 229376
+    },
+    "beta.bias": {
+      "shape": [
+        32
+      ],
+      "parameters": 32
+    },
+    "dt_bias": {
+      "shape": [
+        4096
+      ],
+      "parameters": 4096
+    },
+    "A_log": {
+      "shape": [
+        32
+      ],
+      "parameters": 32
+    },
+    "conv_weight": {
+      "shape": [
+        3,
+        4096,
+        4
+      ],
+      "parameters": 49152
+    },
+    "norm.weight": {
+      "shape": [
+        32,
+        128
+      ],
+      "parameters": 4096
+    }
+  },
+  "single_mixer_total": 149971008,
+  "all_memory_mixers": 4799072256,
+  "trainable_initial_state": 0,
+  "separate_erase_parameters": 0,
+  "separate_write_parameters": 0
+}

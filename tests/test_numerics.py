@@ -5,6 +5,7 @@ from shinra.kernels import delta_reference
 from shinra.losses import chunked_cross_entropy, selected_log_probs
 from shinra.model import ShinraForCausalLM
 from shinra.cache import ShinraCache
+from shinra.settings import ShinraTrainingConfig
 
 
 def test_recurrence_gradcheck_and_split():
@@ -64,8 +65,9 @@ def test_cache_prefill_roundtrip_and_branch(config, tmp_path):
 
 
 def test_checkpoint_gradient_equivalence(config):
-    base = ShinraForCausalLM(config)
-    checked = ShinraForCausalLM(replace(config, gradient_checkpointing=True))
+    policy = ShinraTrainingConfig(memory_train_segment_size=3, mlp_chunk_size=4, loss_chunk_size=3)
+    base = ShinraForCausalLM(config, training=policy)
+    checked = ShinraForCausalLM(config, training=replace(policy, gradient_checkpointing=True))
     checked.load_state_dict(base.state_dict())
     tokens = torch.randint(0, config.vocab_size, (1, 9))
     base(tokens, labels=tokens).loss.backward()

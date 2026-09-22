@@ -1,36 +1,28 @@
 from contextlib import nullcontext
-from dataclasses import dataclass
 import torch
 from .offload import CPUAdamW
-
-
-@dataclass(frozen=True)
-class RuntimeConfig:
-    precision: str = "bf16"
-    activation_offload: bool = False
-    grad_clip: float = 1.0
-    compile_model: bool = False
-    data_parallel: bool = False
-
-    def __post_init__(self):
-        if self.precision not in ("bf16", "fp32", "fp8", "mxfp8") or self.grad_clip <= 0:
-            raise ValueError("Invalid runtime precision or gradient clipping")
+from ..settings import ShinraTrainingConfig
 
 
 def prepare_runtime(model, config):
+    if config != model.training_config:
+        raise ValueError("Construct the model with the same training policy used by the driver")
     if config.precision in ("fp8", "mxfp8"):
         from .precision import convert_dense_gemms
 
         model = convert_dense_gemms(model)
-    return torch.compile(model, dynamic=False) if config.compile_model else model
+    return torch.compile(model, dynamic=False) if model.runtime.compile_model else model
 
 
-def optimizer_update(model, optimizer, microbatches, config=RuntimeConfig(), objective=None):
+def optimizer_update(model, optimizer, microbatches, config=None, objective=None):
     """One explicitly invoked update. Never called by import/CLI/audit.
 
     Text batches are normalized over valid targets across all microbatches.
     Custom objectives return (loss_sum, valid_count), with counts supplied in batch.
     """
+    config = config or model.training_config
+    if not isinstance(config, ShinraTrainingConfig) or config != model.training_config:
+        raise ValueError("Training policy differs from model execution policy")
     batches = list(microbatches)
     if not batches:
         raise ValueError("Empty optimizer update")

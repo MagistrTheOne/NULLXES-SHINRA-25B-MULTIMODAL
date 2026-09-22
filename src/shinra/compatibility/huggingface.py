@@ -19,9 +19,14 @@ class ShinraHFForCausalLM(PreTrainedModel):
     base_model_prefix = "shinra"
     _supports_cache_class = False
 
-    def __init__(self, config, *, allow_large_init=False):
+    def __init__(self, config, *, runtime=None, training=None, allow_large_init=False):
         super().__init__(config)
-        self.shinra = ShinraForCausalLM(ShinraConfig(**config.shinra), allow_large_init=allow_large_init)
+        self.shinra = ShinraForCausalLM(
+            ShinraConfig(**config.shinra),
+            runtime=runtime,
+            training=training,
+            allow_large_init=allow_large_init,
+        )
         # Do not call post_init: initialization/tied embeddings belong to the native model.
 
     def get_input_embeddings(self):

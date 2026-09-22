@@ -36,7 +36,12 @@ class ShinraAudioFrontend(nn.Module):
         )
         self.norm = RMSNorm(c.audio_dim, c.norm_eps)
         self.resampler = Resampler(
-            c.latent_dim, c.latent_ffn, c.latent_heads, c.resampler_layers, c.audio_query_count, c.norm_eps
+            c.latent_dim,
+            c.latent_ffn,
+            c.latent_heads,
+            c.resampler_layers,
+            c.audio_query_bank_size,
+            c.norm_eps,
         )
 
     def forward(self, waveform, state=None, final=False):
@@ -77,7 +82,7 @@ class ShinraAudioFrontend(nn.Module):
         outputs, times = [], []
         for start in range(0, used, 2):
             group = encoded[:, start : min(start + 2, used)]
-            query = ((pending_start + start) // 2) % c.audio_query_count
+            query = ((pending_start + start) // 2) % c.audio_query_bank_size
             outputs.append(self.resampler(group, 1, query))
             times.append(
                 (pending_start + start + group.shape[1] - 1) * c.audio_stem_stride * 4 / c.sample_rate

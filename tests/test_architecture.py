@@ -35,7 +35,7 @@ def test_config_roundtrip(config, tmp_path):
     path = tmp_path / "config.json"
     config.save(path)
     assert ShinraConfig.load(path) == config
-    assert replace(config, attention_backend="flash2").fingerprint() == config.fingerprint()
+    assert "attention_backend" not in config.to_dict()
     with pytest.raises(ValueError):
         replace(config, num_key_value_heads=3)
 

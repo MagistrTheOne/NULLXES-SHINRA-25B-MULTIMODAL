@@ -13,6 +13,13 @@ RMSNorm has one affine scale, no bias. Attention QK norm shares a head-dimension
 scale across heads. Memory output norm has separate affine scales for every head.
 No third-party model configuration is instantiated.
 
+Architecture is separate from `ShinraRuntimeConfig` and `ShinraTrainingConfig`.
+See `cfg_review.md` and `memory_ledger.json` for every memory tensor's exact shape.
+The single implemented rule is channel decay + coupled scalar beta, not GDN2.
+Training uses `memory_train_segment_size`; correctness backends are bounded by
+`reference_backend_max_tokens`. Neither field changes the native context budget.
+Default control IDs belong to [130816,131071] inside the total vocabulary.
+
 ## Recurrence
 
 For normalized q/k, per-channel decay D and scalar beta in [0,1]:

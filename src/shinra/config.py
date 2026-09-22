@@ -24,20 +24,19 @@ class ShinraConfig:
     memory_value_dim: int = 128
     memory_gate_rank: int = 256
     memory_conv_kernel: int = 4
-    memory_segment_size: int = 8192
-    memory_backend: str = "reference"
-    attention_backend: str = "sdpa"
-    reference_max_tokens: int = 4096
+    memory_type: str = "shinra_channel_delta_v1"
+    memory_rule: str = "coupled_delta"
+    memory_channel_decay: bool = True
+    memory_erase_write: str = "shared_scalar_beta"
+    memory_output_gate: str = "silu"
+    memory_qk_norm: str = "l2"
+    memory_output_norm: str = "per_head_rms_affine"
+    memory_state_reset: str = "sequence_boundary"
     max_context_length: int = 327680
     rotary_dim: int = 64
     rope_theta: float = 1_000_000.0
     norm_eps: float = 1e-6
     tie_word_embeddings: bool = True
-    mlp_chunk_size: int = 2048
-    loss_chunk_size: int = 256
-    z_loss: float = 1e-5
-    gradient_checkpointing: bool = False
-    checkpoint_group_size: int = 5
     latent_dim: int = 1024
     visual_dim: int = 1280
     visual_layers: int = 32
@@ -54,7 +53,8 @@ class ShinraConfig:
     audio_stem_kernel: int = 480
     audio_stem_stride: int = 240
     audio_window: int = 256
-    audio_query_count: int = 128
+    audio_query_bank_size: int = 128
+    audio_frames_per_latent: int = 2
     resampler_layers: int = 4
     temporal_layers: int = 4
     latent_heads: int = 16
@@ -65,6 +65,12 @@ class ShinraConfig:
     action_types: int = 64
     world_horizons: int = 8
     world_events: int = 256
+    world_continuous_time: bool = True
+    world_counterfactual: bool = True
+    world_state_reset: str = "episode_boundary"
+    vision_generation: bool = True
+    audio_generation: bool = True
+    video_generation: str = "latent_conditioned_shared_visual_flow"
     visual_decoder_layers: int = 8
     audio_decoder_dim: int = 768
     audio_decoder_layers: int = 8
@@ -104,10 +110,34 @@ class ShinraConfig:
                 raise ValueError("Frontend head dimensions must be divisible by four")
         if self.audio_dim != self.latent_dim:
             raise ValueError("Audio resampler contract requires audio_dim == latent_dim")
-        if self.attention_backend not in {"sdpa", "flash2", "flash4"}:
-            raise ValueError("Unknown attention backend")
-        if self.memory_backend not in {"reference", "fla"}:
-            raise ValueError("Unknown memory backend")
+        contract = {
+            "memory_type": "shinra_channel_delta_v1",
+            "memory_rule": "coupled_delta",
+            "memory_erase_write": "shared_scalar_beta",
+            "memory_output_gate": "silu",
+            "memory_qk_norm": "l2",
+            "memory_output_norm": "per_head_rms_affine",
+            "memory_state_reset": "sequence_boundary",
+            "world_state_reset": "episode_boundary",
+            "video_generation": "latent_conditioned_shared_visual_flow",
+        }
+        if any(getattr(self, key) != value for key, value in contract.items()):
+            raise ValueError(
+                "Unsupported architectural contract; changing a name does not implement a new rule"
+            )
+        if (
+            not all(
+                (
+                    self.memory_channel_decay,
+                    self.world_continuous_time,
+                    self.world_counterfactual,
+                    self.vision_generation,
+                    self.audio_generation,
+                )
+            )
+            or self.audio_frames_per_latent != 2
+        ):
+            raise ValueError("Unsupported modality/memory contract")
         for name, value in asdict(self).items():
             if type(value) is int and value <= 0:
                 raise ValueError(f"{name} must be positive")
@@ -115,29 +145,25 @@ class ShinraConfig:
             raise ValueError("Reserved controls exceed vocabulary")
         if self.memory_conv_kernel < 2 or self.audio_stem_kernel < 2 or self.audio_window < 2:
             raise ValueError("Streaming convolutions/windows require at least two elements")
-        if not all(math.isfinite(value) for value in (self.norm_eps, self.rope_theta, self.z_loss)):
+        if not all(math.isfinite(value) for value in (self.norm_eps, self.rope_theta)):
             raise ValueError("Nonfinite configuration value")
-        if self.norm_eps <= 0 or self.rope_theta <= 1 or self.z_loss < 0:
+        if self.norm_eps <= 0 or self.rope_theta <= 1:
             raise ValueError("Invalid normalization, positional or loss constant")
 
     def to_dict(self):
         return asdict(self)
 
+    @property
+    def control_token_range(self):
+        """Inclusive range inside vocab_size, never appended to it."""
+        return self.vocab_size - self.reserved_control_tokens, self.vocab_size - 1
+
+    @property
+    def world_latent_dim(self):
+        return self.latent_dim
+
     def fingerprint(self):
-        # Runtime dispatch/checkpoint choices do not alter the serialized weights or cache semantics.
-        fields = self.to_dict()
-        for key in (
-            "memory_backend",
-            "attention_backend",
-            "reference_max_tokens",
-            "gradient_checkpointing",
-            "checkpoint_group_size",
-            "mlp_chunk_size",
-            "loss_chunk_size",
-            "memory_segment_size",
-        ):
-            fields.pop(key)
-        return hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
+        return hashlib.sha256(json.dumps(self.to_dict(), sort_keys=True).encode()).hexdigest()
 
     def save(self, path):
         Path(path).write_text(json.dumps(self.to_dict(), indent=2) + "\n", encoding="utf-8")

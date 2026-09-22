@@ -2,15 +2,36 @@
 
 import torch
 import torch.nn.functional as F
+from .dispatch import installed_attention_backends, select_attention_backend
 
 
 def attention(q, k, v, *, backend="sdpa", causal=True, offset=0, window=None, reference_limit=4096):
     # q/k/v are B,S,H,D. Cached decoding uses bottom-right aligned causality.
-    if backend in ("flash2", "flash4"):
+    if q.shape[2] % k.shape[2] or k.shape != v.shape:
+        raise ValueError("Invalid grouped attention dimensions")
+    cudnn_eligible = window is None and (
+        not causal
+        or (offset == 0 and q.shape[1] == k.shape[1])
+        or (q.shape[1] == 1 and offset == k.shape[1] - 1)
+    )
+    if backend == "auto":
+        backend = select_attention_backend(
+            device=q.device.type,
+            capability=torch.cuda.get_device_capability(q.device) if q.device.type == "cuda" else None,
+            dtype=str(q.dtype).removeprefix("torch."),
+            head_dim=q.shape[-1],
+            available=installed_attention_backends() if q.device.type == "cuda" else (),
+            cudnn_eligible=cudnn_eligible,
+        )
+    if backend in ("flash2", "flash3", "flash4"):
         if q.device.type != "cuda":
             raise RuntimeError("FlashAttention requires an environment-provided CUDA runtime")
+        if causal and offset != k.shape[1] - q.shape[1]:
+            raise ValueError("Flash causal attention requires bottom-right aligned query positions")
         if backend == "flash2":
             from flash_attn import flash_attn_func
+        elif backend == "flash3":
+            from flash_attn_interface import flash_attn_func
         else:
             from flash_attn.cute.interface import flash_attn_func
         kwargs = {"causal": causal}
@@ -18,6 +39,23 @@ def attention(q, k, v, *, backend="sdpa", causal=True, offset=0, window=None, re
             kwargs["window_size"] = (window - 1, 0 if causal else window - 1)
         result = flash_attn_func(q, k, v, **kwargs)
         return result[0] if isinstance(result, tuple) else result
+    if backend == "cudnn":
+        if q.device.type != "cuda" or not cudnn_eligible:
+            raise RuntimeError("cuDNN path cannot represent this mask without a dense allocation")
+        from torch.nn.attention import sdpa_kernel, SDPBackend
+
+        with sdpa_kernel(SDPBackend.CUDNN_ATTENTION):
+            result = F.scaled_dot_product_attention(
+                q.transpose(1, 2),
+                k.transpose(1, 2),
+                v.transpose(1, 2),
+                is_causal=causal and q.shape[1] == k.shape[1],
+                dropout_p=0.0,
+                enable_gqa=q.shape[2] != k.shape[2],
+            )
+        return result.transpose(1, 2)
+    if backend != "sdpa":
+        raise ValueError("Unknown attention backend")
     if max(q.shape[1], k.shape[1]) > reference_limit:
         raise RuntimeError("Long attention requires an explicit qualified FlashAttention backend")
     mask = None

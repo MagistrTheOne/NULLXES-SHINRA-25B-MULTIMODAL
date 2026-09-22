@@ -49,8 +49,10 @@ def assemble_stream(model, segments):
             if segment.coordinates.shape[:2] != latent.shape[:2]:
                 raise ValueError("Every latent requires coordinates")
             for token in (segment.start_token_id, segment.end_token_id):
-                if not 0 <= token < c.vocab_size:
-                    raise ValueError("Boundary token outside tokenizer vocabulary")
+                if not c.control_token_range[0] <= token <= c.control_token_range[1]:
+                    raise ValueError(
+                        "Boundary token must be in the reserved control range inside the vocabulary"
+                    )
             types = torch.full(latent.shape[:2], segment.type_id, device=latent.device, dtype=torch.long)
             metadata = fourier_features(segment.coordinates, c.metadata_features)
             content = model.multimodal.embed(latent, segment.modality, types, metadata)

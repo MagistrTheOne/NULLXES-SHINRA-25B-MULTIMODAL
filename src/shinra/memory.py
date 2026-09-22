@@ -6,12 +6,15 @@ from torch.utils.checkpoint import checkpoint
 from .normalization import RMSNorm
 from .cache import MemoryState
 from .kernels import delta_chunk
+from .settings import ShinraRuntimeConfig, ShinraTrainingConfig
 
 
 class ShinraMemoryMixer(nn.Module):
-    def __init__(self, c):
+    def __init__(self, c, runtime=None, training=None):
         super().__init__()
         self.config = c
+        self.runtime = runtime or ShinraRuntimeConfig()
+        self.training_config = training or ShinraTrainingConfig()
         h, m = c.hidden_size, c.memory_heads * c.memory_key_dim
         self.q = nn.Linear(h, m, bias=False)
         self.k = nn.Linear(h, m, bias=False)
@@ -46,8 +49,12 @@ class ShinraMemoryMixer(nn.Module):
     def forward(self, x, state=None):
         c = self.config
         b, s, _ = x.shape
+        runtime, policy = self.runtime, self.training_config
+        backend = runtime.memory_backend
+        if backend == "auto":
+            backend = "fla" if x.device.type == "cuda" else "reference"
         m, j, d = c.memory_heads * c.memory_key_dim, c.memory_heads, c.memory_key_dim
-        if c.memory_backend == "reference" and s > c.reference_max_tokens:
+        if backend == "reference" and s > runtime.reference_backend_max_tokens:
             raise RuntimeError("Reference recurrence is bounded; select qualified FLA for long training")
         projected = torch.stack((self.q(x), self.k(x), self.v(x)), dim=1).transpose(-1, -2)
         history = projected.new_zeros(b, 3, m, c.memory_conv_kernel - 1) if state is None else state.conv
@@ -68,8 +75,9 @@ class ShinraMemoryMixer(nn.Module):
             torch.zeros(b, j, d, d, device=x.device, dtype=torch.float32) if state is None else state.matrix
         )
         outputs = []
-        for start in range(0, s, c.memory_segment_size):
-            end = min(start + c.memory_segment_size, s)
+        # Segment boundaries checkpoint/recompute; they NEVER reset/detach state.
+        for start in range(0, s, policy.memory_train_segment_size):
+            end = min(start + policy.memory_train_segment_size, s)
             args = (
                 q[:, start:end],
                 k[:, start:end],
@@ -80,12 +88,12 @@ class ShinraMemoryMixer(nn.Module):
             )
 
             def run(q_, k_, v_, g_, b_, s_):
-                if c.memory_backend == "fla":
+                if backend == "fla":
                     # Preserve state/gates FP32; kernel GEMMs use the activation dtype.
                     return delta_chunk(q_.to(x.dtype), k_.to(x.dtype), v_.to(x.dtype), g_, b_, s_, "fla")
                 return delta_chunk(q_, k_, v_, g_, b_, s_, "reference")
 
-            if self.training and c.gradient_checkpointing and torch.is_grad_enabled():
+            if self.training and policy.gradient_checkpointing and torch.is_grad_enabled():
                 out, matrix = checkpoint(run, *args, use_reentrant=False)
             else:
                 out, matrix = run(*args)

@@ -26,6 +26,9 @@ class ShinraTokenizer:
             raise ValueError("Control IDs must be unique")
         if any(not 0 <= value < config.vocab_size for value in self.controls.values()):
             raise ValueError("Control ID out of range")
+        low, high = config.control_token_range
+        if any(not low <= value <= high for value in self.controls.values()):
+            raise ValueError("Modality control IDs must belong to the reserved tail of the total vocabulary")
 
     def encode(self, text):
         return self.processor.encode(text, out_type=int)

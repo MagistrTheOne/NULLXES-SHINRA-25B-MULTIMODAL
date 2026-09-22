@@ -1,0 +1,7 @@
+{
+  "attention_backend": "auto",
+  "memory_backend": "auto",
+  "reference_backend_max_tokens": 4096,
+  "compile_model": false,
+  "cache_dtype": "activation"
+}

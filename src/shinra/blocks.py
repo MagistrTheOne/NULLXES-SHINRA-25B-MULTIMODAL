@@ -5,6 +5,7 @@ from .checkpointing import activation_checkpoint
 from .normalization import RMSNorm
 from .attention import ShinraGlobalAttention
 from .memory import ShinraMemoryMixer
+from .settings import ShinraRuntimeConfig, ShinraTrainingConfig
 
 
 class SwiGLU(nn.Module):
@@ -33,12 +34,16 @@ class SwiGLU(nn.Module):
 
 
 class ShinraBlock(nn.Module):
-    def __init__(self, c, kind):
+    def __init__(self, c, kind, runtime=None, training=None):
         super().__init__()
         self.kind = kind
+        runtime = runtime or ShinraRuntimeConfig()
+        training = training or ShinraTrainingConfig()
         self.norm1, self.norm2 = RMSNorm(c.hidden_size, c.norm_eps), RMSNorm(c.hidden_size, c.norm_eps)
-        self.mixer = ShinraMemoryMixer(c) if kind == "memory" else ShinraGlobalAttention(c)
-        self.mlp = SwiGLU(c.hidden_size, c.intermediate_size, c.mlp_chunk_size)
+        self.mixer = (
+            ShinraMemoryMixer(c, runtime, training) if kind == "memory" else ShinraGlobalAttention(c, runtime)
+        )
+        self.mlp = SwiGLU(c.hidden_size, c.intermediate_size, training.mlp_chunk_size)
 
     def forward(self, x, state=None, offset=0):
         result, state = (

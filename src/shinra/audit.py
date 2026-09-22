@@ -1,7 +1,45 @@
 """Allocation-free parameter accounting. Does not import PyTorch."""
 
 import json
+import math
 from .config import ShinraConfig
+
+
+def memory_parameter_shapes(c):
+    """Actual PyTorch storage order, out_features x in_features; one native mixer."""
+    h, j, k, v, r = c.hidden_size, c.memory_heads, c.memory_key_dim, c.memory_value_dim, c.memory_gate_rank
+    qwidth, vwidth = j * k, j * v
+    return {
+        "q.weight": (qwidth, h),
+        "k.weight": (qwidth, h),
+        "v.weight": (vwidth, h),
+        "o.weight": (h, vwidth),
+        "output_gate.weight": (vwidth, h),
+        "gate_down.weight": (r, h),
+        "decay_up.weight": (qwidth, r),
+        "beta.weight": (j, h),
+        "beta.bias": (j,),
+        "dt_bias": (qwidth,),
+        "A_log": (j,),
+        "conv_weight": (3, qwidth, c.memory_conv_kernel),
+        "norm.weight": (j, v),
+    }
+
+
+def memory_ledger(c):
+    shapes = memory_parameter_shapes(c)
+    entries = {name: {"shape": list(shape), "parameters": math.prod(shape)} for name, shape in shapes.items()}
+    count = sum(value["parameters"] for value in entries.values())
+    return {
+        "type": c.memory_type,
+        "rule": c.memory_rule,
+        "parameters": entries,
+        "single_mixer_total": count,
+        "all_memory_mixers": count * c.layer_types.count("memory"),
+        "trainable_initial_state": 0,
+        "separate_erase_parameters": 0,
+        "separate_write_parameters": 0,
+    }
 
 
 def parameter_ledger(c: ShinraConfig):
@@ -51,7 +89,7 @@ def parameter_ledger(c: ShinraConfig):
         + c.max_visual_latents * z
         + z,
         "audio.resampler": c.resampler_layers * x(z, c.latent_ffn, c.latent_heads)
-        + c.audio_query_count * z
+        + c.audio_query_bank_size * z
         + z,
         "temporal": c.temporal_layers * t(z, c.latent_ffn, c.latent_heads) + z + c.time_features * z,
         "interfaces": 6 * z * h + 6 * z,
