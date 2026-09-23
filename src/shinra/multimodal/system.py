@@ -22,12 +22,13 @@ class ModalityInterface(nn.Module):
 
 
 class ShinraMultimodal(nn.Module):
-    def __init__(self, c):
+    def __init__(self, c, runtime=None):
         super().__init__()
         self.config = c
-        self.image = ShinraImageFrontend(c)
-        self.audio = ShinraAudioFrontend(c)
-        self.temporal = ShinraTemporalModule(c)
+        self.runtime = runtime
+        self.image = ShinraImageFrontend(c, runtime)
+        self.audio = ShinraAudioFrontend(c, runtime)
+        self.temporal = ShinraTemporalModule(c, runtime)
         self.interfaces = nn.ModuleDict(
             {
                 name: ModalityInterface(c.latent_dim, c.hidden_size, c.norm_eps)
@@ -36,8 +37,8 @@ class ShinraMultimodal(nn.Module):
         )
         self.types = nn.Embedding(c.modality_types, c.hidden_size)
         self.metadata = nn.Linear(c.metadata_features, c.hidden_size, bias=False)
-        self.visual_decoder = VisualFlowDecoder(c)
-        self.audio_decoder = AudioFlowDecoder(c)
+        self.visual_decoder = VisualFlowDecoder(c, runtime)
+        self.audio_decoder = AudioFlowDecoder(c, runtime)
 
     def embed(self, latents, modality, type_ids, metadata):
         if metadata.shape[:-1] != latents.shape[:-1] or metadata.shape[-1] != self.config.metadata_features:
@@ -48,12 +49,16 @@ class ShinraMultimodal(nn.Module):
             + self.metadata(metadata.to(latents.dtype))
         )
 
-    def video(self, frames, times, state=None, final=False, spatial_tokens=64, fast_tokens=8):
-        """Frame groups of four. B,F,3,H,W -> timestamped latents and immutable side state.
+    def video(self, frames, times, state=None, final=False):
+        """Configured frame groups. B,F,3,H,W -> timestamped latents and immutable side state.
 
-        Frames within a group become available together at its final timestamp. This
-        avoids lookahead leakage when temporal compression sees all four frames.
+        spatial tokens are the image resampler output for one frame. fast tokens are a
+        second pass of that same resampler over those per-frame latents, not a separate
+        visual encoder. Frames in a group become available together at its last timestamp.
         """
+        spatial_tokens = self.config.video_spatial_tokens
+        fast_tokens = self.config.video_fast_tokens
+        frame_group = self.config.video_frame_group
         if frames.ndim != 5 or times.ndim != 1 or len(times) != frames.shape[1]:
             raise ValueError("Expected video B,F,3,H,W and one timestamp per frame")
         if len(times) and (times[1:] < times[:-1]).any():
@@ -72,10 +77,10 @@ class ShinraMultimodal(nn.Module):
         if "pending" in state:
             latent = torch.cat((state["pending"], latent), 1)
             times = torch.cat((state["pending_times"].to(times.device), times))
-        available = latent.shape[1] if final else latent.shape[1] // 4 * 4
+        available = latent.shape[1] if final else latent.shape[1] // frame_group * frame_group
         outputs, output_times = [], []
-        for start in range(0, available, 4):
-            group = latent[:, start : min(start + 4, available)]
+        for start in range(0, available, frame_group):
+            group = latent[:, start : min(start + frame_group, available)]
             stamp = times[start : start + group.shape[1]]
             timed = self.temporal(group.flatten(1, 2), stamp.repeat_interleave(spatial_tokens))
             slow = self.image.resampler(timed, spatial_tokens)

@@ -82,7 +82,8 @@ def parameter_ledger(c: ShinraConfig):
         "visual.patch": patch * c.visual_dim,
         "visual.norm": c.visual_dim,
         "audio.blocks": c.audio_layers * t(c.audio_dim, c.audio_ffn, c.audio_heads),
-        "audio.stem": c.audio_stem_kernel * c.audio_dim + 8 * c.audio_dim**2,
+        "audio.stem": c.audio_stem_kernel * c.audio_dim
+        + c.audio_stem_stages * c.audio_conv_kernel * c.audio_dim**2,
         "audio.norm": c.audio_dim,
         "visual.resample_in": c.visual_dim * z,
         "visual.resampler": c.resampler_layers * x(z, c.latent_ffn, c.latent_heads)
@@ -98,7 +99,7 @@ def parameter_ledger(c: ShinraConfig):
         "world.future": z * c.latent_ffn + c.latent_ffn * 2 * z,
         "world.action": 4 * c.action_dim * z + c.action_types * z,
         "world.time": c.time_features * z + c.world_horizons * z,
-        "world.events": z * c.world_events + 4 * z,
+        "world.events": z * c.world_events + len(c.world_aux_channels) * z,
         "visual.decoder": c.visual_decoder_layers * t(z, c.latent_ffn, c.latent_heads)
         + 2 * patch * z
         + z * z
@@ -107,7 +108,7 @@ def parameter_ledger(c: ShinraConfig):
         "audio.decoder": c.audio_decoder_layers
         * t(c.audio_decoder_dim, c.audio_decoder_ffn, c.audio_decoder_heads)
         + 2 * c.audio_output_patch * c.audio_decoder_dim
-        + z * 4 * c.audio_decoder_dim
+        + z * c.audio_decoder_expand * c.audio_decoder_dim
         + c.time_features * c.audio_decoder_dim
         + c.audio_decoder_dim,
     }

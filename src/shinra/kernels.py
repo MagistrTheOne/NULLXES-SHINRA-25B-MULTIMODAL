@@ -57,7 +57,10 @@ def attention(q, k, v, *, backend="sdpa", causal=True, offset=0, window=None, re
     if backend != "sdpa":
         raise ValueError("Unknown attention backend")
     if max(q.shape[1], k.shape[1]) > reference_limit:
-        raise RuntimeError("Long attention requires an explicit qualified FlashAttention backend")
+        raise RuntimeError(
+            "Reference attention backend is limited by reference_backend_max_tokens; "
+            "this is not the model context. Select a qualified fused backend for a longer KV prefix"
+        )
     mask = None
     simple_causal = causal and offset == 0 and q.shape[1] == k.shape[1] and window is None
     if not simple_causal and (causal or window is not None):
@@ -95,25 +98,9 @@ def delta_reference(q, k, v, log_decay, beta, state):
 
 
 def delta_chunk(q, k, v, log_decay, beta, state, backend):
-    if backend == "reference":
-        return delta_reference(q, k, v, log_decay, beta, state)
-    if q.device.type != "cuda":
-        raise RuntimeError("FLA backend requires CUDA; no silent fallback")
-    from fla.ops.kda import chunk_kda
-
-    return chunk_kda(
-        q=q,
-        k=k,
-        v=v,
-        g=log_decay,
-        beta=beta,
-        initial_state=state,
-        scale=1.0,
-        output_final_state=True,
-        use_qk_l2norm_in_kernel=False,
-        use_gate_in_kernel=False,
-        use_beta_sigmoid_in_kernel=False,
-        allow_neg_eigval=False,
-        state_v_first=False,
-        disable_recompute=False,
-    )
+    if backend != "reference":
+        raise RuntimeError(
+            "No accelerated kernel is proven equivalent to shinra_channel_delta_v1. "
+            "fla.ops.kda.chunk_kda is a different recurrence and is not selected by memory_backend=auto"
+        )
+    return delta_reference(q, k, v, log_decay, beta, state)

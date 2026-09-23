@@ -71,9 +71,16 @@ When separately authorized to construct a model, pass `runtime=runtime, training
 to its constructor; execution settings do not belong to the model fingerprint.
 
 The memory identity is `shinra_channel_delta_v1`, a channel-decay delta rule with
-shared scalar erase/write beta. It is not FLA's full GatedDeltaNet layer and is not
-GDN2. One mixer has exactly **149,971,008 parameters**. The 8192 training segment
-carries state and gradients; only a sequence boundary resets memory.
+shared scalar erase/write beta. It is not FLA's GatedDeltaNet, not KDA, and not
+GDN2. `memory_backend=auto` runs the reference recurrence. One mixer has exactly
+**149,971,008 parameters**. Execution chunks carry the recurrent matrix and the
+convolution tail; only a sequence boundary resets memory. `8192` is that chunk
+request, and `4096` is only the reference-backend cap. Neither is the 327680 context.
+
+The architecture contract is frozen for bootstrap preparation. That is not a claim
+of trained context, retrieval, world-model behavior, or GPU kernel parity. See
+[architecture freeze v2](specifications/architecture_freeze_v2.md). `rotary_dim=64`
+and `memory_gate_rank=256` remain experimental hypotheses inside that freeze.
 
 ## Interfaces
 
@@ -81,10 +88,11 @@ carries state and gradients; only a sequence boundary resets memory.
   bounded optional logits and explicit cache. No implicit padded/packed episodes.
 - `multimodal.image`: dynamic RGB resolution within the explicit patch budget.
 - `multimodal.audio`: streaming mono waveform -> timestamped continuous latents.
-- `multimodal.video`: frame/time stream -> temporal slow/fast latents.
+- `multimodal.video`: frame/time stream -> temporal latents. Fast tokens are a
+  second resample of the per-frame latents, not a separate encoder.
 - `assemble_stream`: text + typed continuous latents + boundary IDs + coordinates.
-- `predict_world`: observation slots -> action/Δt conditioning -> shared backbone
-  -> future-state distribution and event/action heads.
+- `predict_world`: observations + previous slots + action + Δt -> next slots,
+  all configured horizon heads, and named reward/terminal/value/cost logits.
 - `flow_matching_loss` / `sample_flow`: native visual/audio output decoders.
 - `video_flow_loss` / `sample_video`: temporal conditioning + shared visual decoder;
   requires per-frame latent conditions, not a text-to-video latent planner.

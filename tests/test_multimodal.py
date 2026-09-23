@@ -26,9 +26,9 @@ def test_video_stream_equivalence(config):
     frames = torch.randn(1, 7, 3, 8, 8)
     times = torch.arange(7) / 8
     with torch.no_grad():
-        whole, t, _ = mm.video(frames, times, final=True, spatial_tokens=4, fast_tokens=1)
-        first, t1, state = mm.video(frames[:, :3], times[:3], spatial_tokens=4, fast_tokens=1)
-        second, t2, _ = mm.video(frames[:, 3:], times[3:], state, final=True, spatial_tokens=4, fast_tokens=1)
+        whole, t, _ = mm.video(frames, times, final=True)
+        first, t1, state = mm.video(frames[:, :3], times[:3])
+        second, t2, _ = mm.video(frames[:, 3:], times[3:], state, final=True)
         torch.testing.assert_close(torch.cat((first, second), 1), whole)
         torch.testing.assert_close(torch.cat((t1, t2)), t)
 
@@ -46,13 +46,12 @@ def test_modal_and_world_gradients(config):
         torch.ones_like(actions),
         torch.tensor([1]),
         torch.tensor([0.5]),
-        torch.tensor([1]),
     )
     world, _ = model.predict_world(*args)
     target = torch.randn_like(world["mean"])
     loss = future_state_loss(world["mean"], world["log_variance"], target)
     loss += flow_matching_loss(model.multimodal.visual_decoder, images, visual)
-    waveform = torch.randn(1, audio.shape[1] * 4 * config.audio_output_patch)
+    waveform = torch.randn(1, audio.shape[1] * config.audio_decoder_expand * config.audio_output_patch)
     loss += flow_matching_loss(model.multimodal.audio_decoder, waveform, audio)
     loss.backward()
     for parameter in (
@@ -99,7 +98,5 @@ def test_stream_cache_storage_is_bounded(config):
         for name, tensor in audio.items():
             if name.endswith((".history", ".k", ".v")) or name == "pending":
                 assert tensor.untyped_storage().nbytes() == tensor.numel() * tensor.element_size(), name
-        _, _, video = model.multimodal.video(
-            torch.randn(1, 8, 3, 8, 8), torch.arange(8) / 8, spatial_tokens=4, fast_tokens=1
-        )
+        _, _, video = model.multimodal.video(torch.randn(1, 8, 3, 8, 8), torch.arange(8) / 8)
         assert video["pending"].untyped_storage().nbytes() == 0

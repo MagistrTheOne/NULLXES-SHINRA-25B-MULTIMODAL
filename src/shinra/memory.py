@@ -2,11 +2,10 @@ import math
 import torch
 from torch import nn
 import torch.nn.functional as F
-from torch.utils.checkpoint import checkpoint
 from .normalization import RMSNorm
 from .cache import MemoryState
 from .kernels import delta_chunk
-from .settings import ShinraRuntimeConfig, ShinraTrainingConfig
+from .settings import ShinraRuntimeConfig, ShinraTrainingConfig, execution_segment_size
 
 
 class ShinraMemoryMixer(nn.Module):
@@ -46,18 +45,24 @@ class ShinraMemoryMixer(nn.Module):
             self.A_log.zero_()
             self.beta.bias.fill_(-2.197224577)
 
-    def forward(self, x, state=None):
+    def _backend(self):
+        name = self.runtime.memory_backend
+        if name in ("auto", "reference"):
+            return "reference"
+        raise RuntimeError(
+            "memory_backend does not select fla.ops.kda.chunk_kda. "
+            "That kernel is not shinra_channel_delta_v1; auto runs the reference recurrence"
+        )
+
+    def _chunk(self, xs, history, matrix):
+        """One causal chunk: projections, convolution, gates and the delta scan.
+
+        Full BPTT: history and matrix are returned as live tensors. Nothing is detached.
+        """
         c = self.config
-        b, s, _ = x.shape
-        runtime, policy = self.runtime, self.training_config
-        backend = runtime.memory_backend
-        if backend == "auto":
-            backend = "fla" if x.device.type == "cuda" else "reference"
+        b, s, _ = xs.shape
         m, j, d = c.memory_heads * c.memory_key_dim, c.memory_heads, c.memory_key_dim
-        if backend == "reference" and s > runtime.reference_backend_max_tokens:
-            raise RuntimeError("Reference recurrence is bounded; select qualified FLA for long training")
-        projected = torch.stack((self.q(x), self.k(x), self.v(x)), dim=1).transpose(-1, -2)
-        history = projected.new_zeros(b, 3, m, c.memory_conv_kernel - 1) if state is None else state.conv
+        projected = torch.stack((self.q(xs), self.k(xs), self.v(xs)), dim=1).transpose(-1, -2)
         joined = torch.cat((history, projected), dim=-1)
         convolved = F.conv1d(
             joined.reshape(b, 3 * m, -1), self.conv_weight.reshape(3 * m, 1, -1), groups=3 * m
@@ -66,39 +71,29 @@ class ShinraMemoryMixer(nn.Module):
         q, k, v = [t.reshape(b, s, j, d) for t in convolved.unbind(1)]
         q = F.normalize(q.float(), dim=-1, eps=c.norm_eps)
         k = F.normalize(k.float(), dim=-1, eps=c.norm_eps)
-        gate = self.decay_up(F.silu(self.gate_down(x))).float().reshape(b, s, j, d)
+        gate = self.decay_up(F.silu(self.gate_down(xs))).float().reshape(b, s, j, d)
         decay = -self.A_log.float().exp()[None, None, :, None] * F.softplus(
             gate + self.dt_bias.float().view(j, d)
         )
-        beta = self.beta(x).float().sigmoid()
+        beta = self.beta(xs).float().sigmoid()
+        out, matrix = delta_chunk(q, k, v.float(), decay, beta, matrix, self._backend())
+        y = self.o(self.norm(out.to(xs.dtype)).flatten(-2) * F.silu(self.output_gate(xs)))
+        # Own the kernel tail. A view would pin the whole chunk projection in the cache.
+        return y, joined[..., -(c.memory_conv_kernel - 1) :].clone(), matrix
+
+    def forward(self, x, state=None):
+        c = self.config
+        b, s, _ = x.shape
+        m, j, d = c.memory_heads * c.memory_key_dim, c.memory_heads, c.memory_key_dim
+        self._backend()
+        width = execution_segment_size(self.training_config, self.runtime, device_type=x.device.type)
+        history = x.new_zeros(b, 3, m, c.memory_conv_kernel - 1) if state is None else state.conv
         matrix = (
             torch.zeros(b, j, d, d, device=x.device, dtype=torch.float32) if state is None else state.matrix
         )
         outputs = []
-        # Segment boundaries checkpoint/recompute; they NEVER reset/detach state.
-        for start in range(0, s, policy.memory_train_segment_size):
-            end = min(start + policy.memory_train_segment_size, s)
-            args = (
-                q[:, start:end],
-                k[:, start:end],
-                v[:, start:end].float(),
-                decay[:, start:end],
-                beta[:, start:end],
-                matrix,
-            )
-
-            def run(q_, k_, v_, g_, b_, s_):
-                if backend == "fla":
-                    # Preserve state/gates FP32; kernel GEMMs use the activation dtype.
-                    return delta_chunk(q_.to(x.dtype), k_.to(x.dtype), v_.to(x.dtype), g_, b_, s_, "fla")
-                return delta_chunk(q_, k_, v_, g_, b_, s_, "reference")
-
-            if self.training and policy.gradient_checkpointing and torch.is_grad_enabled():
-                out, matrix = checkpoint(run, *args, use_reentrant=False)
-            else:
-                out, matrix = run(*args)
-            outputs.append(out)
-        output = self.norm(torch.cat(outputs, dim=1).to(x.dtype)).flatten(-2)
-        y = self.o(output * F.silu(self.output_gate(x)))
-        # A narrow view would retain the entire prefill projection storage in the cache.
-        return y, MemoryState(matrix.float(), joined[..., -(c.memory_conv_kernel - 1) :].clone())
+        # Chunks carry live state. Full BPTT stays intact; truncated BPTT is not this path.
+        for start in range(0, s, width):
+            y, history, matrix = self._chunk(x[:, start : start + width], history, matrix)
+            outputs.append(y)
+        return torch.cat(outputs, dim=1), MemoryState(matrix.float().clone(), history)

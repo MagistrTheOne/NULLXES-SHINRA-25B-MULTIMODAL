@@ -32,6 +32,7 @@ def test_segment_changes_neither_state_nor_gradients(config, segment):
     b, sb = segmented(other)
     torch.testing.assert_close(a, b)
     torch.testing.assert_close(sa.matrix, sb.matrix)
+    torch.testing.assert_close(sa.conv, sb.conv)
     (a.square().sum() + sa.matrix.square().sum()).backward()
     (b.square().sum() + sb.matrix.square().sum()).backward()
     torch.testing.assert_close(x.grad, other.grad, rtol=2e-4, atol=1e-5)

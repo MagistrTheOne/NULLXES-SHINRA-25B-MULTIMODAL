@@ -4,6 +4,7 @@ import pytest
 import torch
 from shinra import ShinraConfig
 from shinra.audit import parameter_ledger
+from shinra.config import validate_production_stack
 from shinra.model import ShinraForCausalLM
 from shinra.training.offload import CPUAdamW
 from shinra.settings import ShinraRuntimeConfig, ShinraTrainingConfig
@@ -18,6 +19,8 @@ def test_published_config_and_ledger():
     assert runtime.attention_backend == "auto" and runtime.memory_backend == "auto"
     assert training.gradient_checkpointing and training.memory_train_segment_size == 8192
     assert parameter_ledger(config) == json.loads((root / "specifications/parameter_ledger.json").read_text())
+    assert config == ShinraConfig()
+    validate_production_stack(config, runtime, training)
 
 
 def test_hf_adapter_matches_native(config):
@@ -68,7 +71,7 @@ def test_world_branches_preserve_prefix(config):
         prefix = model(torch.tensor([[10, 11]]), use_cache=True).cache
         observations = torch.randn(1, 4, config.latent_dim)
         actions = torch.zeros(1, config.action_dim)
-        common = (torch.ones_like(actions), torch.tensor([0]), torch.tensor([1.0]), torch.tensor([0]))
+        common = (torch.ones_like(actions), torch.tensor([0]), torch.tensor([1.0]))
         first, a = model.predict_world(observations, actions, *common, cache=prefix)
         second, b = model.predict_world(observations, actions + 1, *common, cache=prefix)
     assert prefix.length == 2

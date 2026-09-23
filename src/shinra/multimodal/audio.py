@@ -5,6 +5,11 @@ from .layers import FrontendBlock, Resampler
 from ..normalization import RMSNorm
 
 
+def encoder_frame_hop(config):
+    """Samples advanced by one encoder frame after the configured stem strides."""
+    return config.audio_stem_stride * (config.audio_conv_stride**config.audio_stem_stages)
+
+
 def causal_conv_stream(x, conv, stride, state, prefix):
     kernel = conv.weight.shape[-1]
     history = state.get(prefix + ".history", x.new_zeros(x.shape[0], x.shape[1], kernel - 1))
@@ -18,19 +23,25 @@ def causal_conv_stream(x, conv, stride, state, prefix):
 
 
 class ShinraAudioFrontend(nn.Module):
-    def __init__(self, c):
+    def __init__(self, c, runtime=None):
         super().__init__()
         self.config = c
+        kernels = (c.audio_stem_kernel,) + (c.audio_conv_kernel,) * c.audio_stem_stages
+        self.stem_strides = (c.audio_stem_stride,) + (c.audio_conv_stride,) * c.audio_stem_stages
         self.stem = nn.ModuleList(
             [
-                nn.Conv1d(1, c.audio_dim, c.audio_stem_kernel, bias=False),
-                nn.Conv1d(c.audio_dim, c.audio_dim, 4, bias=False),
-                nn.Conv1d(c.audio_dim, c.audio_dim, 4, bias=False),
+                nn.Conv1d(1 if index == 0 else c.audio_dim, c.audio_dim, kernel, bias=False)
+                for index, kernel in enumerate(kernels)
             ]
         )
+        attention = {
+            "runtime": runtime,
+            "rope_theta": c.audio_rope_theta,
+            "spatial_rope_theta": c.spatial_rope_theta,
+        }
         self.layers = nn.ModuleList(
             [
-                FrontendBlock(c.audio_dim, c.audio_ffn, c.audio_heads, c.norm_eps)
+                FrontendBlock(c.audio_dim, c.audio_ffn, c.audio_heads, c.norm_eps, **attention)
                 for _ in range(c.audio_layers)
             ]
         )
@@ -42,6 +53,7 @@ class ShinraAudioFrontend(nn.Module):
             c.resampler_layers,
             c.audio_query_bank_size,
             c.norm_eps,
+            **attention,
         )
 
     def forward(self, waveform, state=None, final=False):
@@ -57,7 +69,7 @@ class ShinraAudioFrontend(nn.Module):
         if int(state.get("closed", torch.tensor(0))):
             raise ValueError("Audio episode already finalized; reset its state")
         x = waveform.unsqueeze(1)
-        for index, (conv, stride) in enumerate(zip(self.stem, (c.audio_stem_stride, 2, 2))):
+        for index, (conv, stride) in enumerate(zip(self.stem, self.stem_strides)):
             if x.shape[-1] == 0:
                 break
             x = causal_conv_stream(x, conv, stride, state, f"stem{index}")
@@ -78,15 +90,15 @@ class ShinraAudioFrontend(nn.Module):
         if old_pending is not None:
             encoded = torch.cat((old_pending, encoded), dim=1)
         pending_start = offset - (0 if old_pending is None else old_pending.shape[1])
-        used = encoded.shape[1] if final else (encoded.shape[1] // 2) * 2
+        group_frames = c.audio_frames_per_latent
+        used = encoded.shape[1] if final else (encoded.shape[1] // group_frames) * group_frames
         outputs, times = [], []
-        for start in range(0, used, 2):
-            group = encoded[:, start : min(start + 2, used)]
-            query = ((pending_start + start) // 2) % c.audio_query_bank_size
+        hop = encoder_frame_hop(c)
+        for start in range(0, used, group_frames):
+            group = encoded[:, start : min(start + group_frames, used)]
+            query = ((pending_start + start) // group_frames) % c.audio_query_bank_size
             outputs.append(self.resampler(group, 1, query))
-            times.append(
-                (pending_start + start + group.shape[1] - 1) * c.audio_stem_stride * 4 / c.sample_rate
-            )
+            times.append((pending_start + start + group.shape[1] - 1) * hop / c.sample_rate)
         state["pending"] = encoded[:, used:].clone()
         state["frames"] = torch.tensor(offset + new_count)
         state["closed"] = torch.tensor(int(final))

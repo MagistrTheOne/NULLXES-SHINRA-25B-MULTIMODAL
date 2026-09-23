@@ -7,7 +7,7 @@ from ..positions import fourier_features
 
 
 class VisualFlowDecoder(nn.Module):
-    def __init__(self, c):
+    def __init__(self, c, runtime=None):
         super().__init__()
         self.config = c
         d, p = c.latent_dim, 3 * c.patch_size**2
@@ -16,7 +16,15 @@ class VisualFlowDecoder(nn.Module):
         self.time = nn.Linear(c.time_features, d, bias=False)
         self.layers = nn.ModuleList(
             [
-                FrontendBlock(d, c.latent_ffn, c.latent_heads, c.norm_eps)
+                FrontendBlock(
+                    d,
+                    c.latent_ffn,
+                    c.latent_heads,
+                    c.norm_eps,
+                    runtime=runtime,
+                    rope_theta=c.rope_theta,
+                    spatial_rope_theta=c.spatial_rope_theta,
+                )
                 for _ in range(c.visual_decoder_layers)
             ]
         )
@@ -45,16 +53,24 @@ class VisualFlowDecoder(nn.Module):
 
 
 class AudioFlowDecoder(nn.Module):
-    def __init__(self, c):
+    def __init__(self, c, runtime=None):
         super().__init__()
         self.config = c
         d, p = c.audio_decoder_dim, c.audio_output_patch
         self.input, self.output = nn.Linear(p, d, bias=False), nn.Linear(d, p, bias=False)
-        self.condition = nn.Linear(c.latent_dim, 4 * d, bias=False)
+        self.condition = nn.Linear(c.latent_dim, c.audio_decoder_expand * d, bias=False)
         self.time = nn.Linear(c.time_features, d, bias=False)
         self.layers = nn.ModuleList(
             [
-                FrontendBlock(d, c.audio_decoder_ffn, c.audio_decoder_heads, c.norm_eps)
+                FrontendBlock(
+                    d,
+                    c.audio_decoder_ffn,
+                    c.audio_decoder_heads,
+                    c.norm_eps,
+                    runtime=runtime,
+                    rope_theta=c.audio_rope_theta,
+                    spatial_rope_theta=c.spatial_rope_theta,
+                )
                 for _ in range(c.audio_decoder_layers)
             ]
         )
@@ -62,8 +78,9 @@ class AudioFlowDecoder(nn.Module):
 
     def forward(self, noisy, condition, time):
         c = self.config
-        if noisy.shape[1] != condition.shape[1] * 4 * c.audio_output_patch:
-            raise ValueError("Audio output must contain four waveform patches per conditioning latent")
+        expand = c.audio_decoder_expand
+        if noisy.shape[1] != condition.shape[1] * expand * c.audio_output_patch:
+            raise ValueError("Audio output must contain the configured waveform patches per latent")
         patches = noisy.reshape(noisy.shape[0], -1, c.audio_output_patch)
         x = self.input(patches) + self.condition(condition).reshape(noisy.shape[0], -1, c.audio_decoder_dim)
         x = x + self.time(fourier_features(time[:, None], c.time_features).to(x.dtype))

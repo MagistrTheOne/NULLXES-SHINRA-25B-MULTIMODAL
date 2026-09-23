@@ -59,7 +59,7 @@ def test_context_and_reference_guards(config):
     with pytest.raises(ValueError, match="context"):
         model(torch.zeros(1, 129, dtype=torch.long))
     guarded = ShinraForCausalLM(config, runtime=ShinraRuntimeConfig(reference_backend_max_tokens=4))
-    with pytest.raises(RuntimeError, match="Reference recurrence"):
+    with pytest.raises(RuntimeError, match="not the model context"):
         guarded(torch.zeros(1, 5, dtype=torch.long))
 
 

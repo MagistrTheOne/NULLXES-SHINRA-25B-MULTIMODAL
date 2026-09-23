@@ -29,8 +29,11 @@ class ShinraRuntimeConfig(SettingsFile):
     def __post_init__(self):
         if self.attention_backend not in {"auto", "sdpa", "flash2", "flash3", "flash4", "cudnn"}:
             raise ValueError("Unknown attention backend")
-        if self.memory_backend not in {"auto", "reference", "fla"}:
-            raise ValueError("Unknown memory backend")
+        if self.memory_backend not in {"auto", "reference"}:
+            raise ValueError(
+                "Unknown memory backend. fla.ops.kda.chunk_kda is not shinra_channel_delta_v1; "
+                "auto selects the reference recurrence"
+            )
         if self.reference_backend_max_tokens < 1:
             raise ValueError("Reference correctness-backend limit must be positive")
         if self.cache_dtype != "activation":
@@ -68,3 +71,23 @@ class ShinraTrainingConfig(SettingsFile):
             or self.grad_clip <= 0
         ):
             raise ValueError("Invalid training loss/clipping policy")
+
+
+def execution_segment_size(training, runtime, *, device_type):
+    """Tokens per differentiable execution chunk.
+
+    This is not the model context. While the only proven memory implementation is
+    the reference recurrence, a chunk cannot exceed reference_backend_max_tokens.
+    CPU/SDPA attention uses the same cap. A fused attention backend may attend to
+    a carried KV prefix longer than that cap; the cap never truncates the episode.
+    """
+    requested = training.memory_train_segment_size
+    caps = [requested]
+    if runtime.memory_backend in {"auto", "reference"}:
+        caps.append(runtime.reference_backend_max_tokens)
+    backend = runtime.attention_backend
+    if backend == "auto" and device_type != "cuda":
+        backend = "sdpa"
+    if backend == "sdpa":
+        caps.append(runtime.reference_backend_max_tokens)
+    return min(caps)

@@ -5,11 +5,11 @@ from .config import ShinraConfig
 from .audit import parameter_ledger
 from .blocks import ShinraBlock
 from .normalization import RMSNorm
-from .cache import ShinraCache
+from .cache import GlobalKV, MemoryState, ShinraCache
 from .losses import chunked_cross_entropy, selected_log_probs
 from .multimodal import ShinraMultimodal
 from .world import ShinraWorldModel
-from .settings import ShinraRuntimeConfig, ShinraTrainingConfig
+from .settings import ShinraRuntimeConfig, ShinraTrainingConfig, execution_segment_size
 
 
 @dataclass
@@ -37,8 +37,8 @@ class ShinraForCausalLM(nn.Module):
             [ShinraBlock(c, kind, self.runtime, self.training_config) for kind in c.layer_types]
         )
         self.norm = RMSNorm(c.hidden_size, c.norm_eps)
-        self.multimodal = ShinraMultimodal(c)
-        self.world = ShinraWorldModel(c)
+        self.multimodal = ShinraMultimodal(c, self.runtime)
+        self.world = ShinraWorldModel(c, self.runtime)
         self.reset_parameters()
 
     @property
@@ -87,28 +87,15 @@ class ShinraForCausalLM(nn.Module):
         current.validate(c, x.shape[1])
         updated = current.fork() if use_cache else None
         policy = self.training_config
-        if policy.gradient_checkpointing and self.training and torch.is_grad_enabled():
-            for start in range(0, len(self.layers), policy.checkpoint_group_size):
-                group = tuple(self.layers[start : start + policy.checkpoint_group_size])
-
-                def run_group(value, blocks=group):
-                    for block in blocks:
-
-                        def run_layer(inner, current_block=block):
-                            return current_block(inner)[0]
-
-                        value = activation_checkpoint(
-                            run_layer, value, use_te=bool(getattr(self, "_shinra_te_paths", ()))
-                        )
-                    return value
-
-                x = activation_checkpoint(run_group, x, use_te=bool(getattr(self, "_shinra_te_paths", ())))
-        else:
-            for index, layer in enumerate(self.layers):
-                state = current.layers.get(index)
-                x, new_state = layer(x, state, current.length)
-                if use_cache:
-                    updated.layers[index] = new_state
+        states = [current.layers.get(index) if current.length else None for index in range(len(self.layers))]
+        width = execution_segment_size(policy, self.runtime, device_type=x.device.type)
+        pieces = []
+        for start in range(0, x.shape[1], width):
+            piece, states = self._run_segment(x[:, start : start + width], states, current.length + start)
+            pieces.append(piece)
+        x = torch.cat(pieces, dim=1) if len(pieces) > 1 else pieces[0]
+        if updated is not None:
+            updated.layers = {index: state for index, state in enumerate(states)}
         x = self.norm(x)
         if updated is not None:
             updated.length += x.shape[1]
@@ -127,6 +114,46 @@ class ShinraForCausalLM(nn.Module):
             raise ValueError("Logits output is bounded; use iter_logits for larger requests")
         logits = nn.functional.linear(x[:, -logits_to_keep:], self.lm_head_weight) if logits_to_keep else None
         return ShinraOutput(x, loss, count, logits, updated)
+
+    def _run_segment(self, hidden, states, offset):
+        """Run every layer on one execution chunk, carrying recurrent and KV state.
+
+        Checkpoint groups recompute layer ranges. They do not drop or detach state.
+        Global layers still see the carried KV prefix, so the chunk is not a local window.
+        """
+        policy = self.training_config
+        group = policy.checkpoint_group_size
+        new_states = list(states)
+        use_checkpoint = self.training and policy.gradient_checkpointing and torch.is_grad_enabled()
+        te = bool(getattr(self, "_shinra_te_paths", ()))
+        for start in range(0, len(self.layers), group):
+            indices = tuple(range(start, min(start + group, len(self.layers))))
+            packed, kinds = [], []
+            for index in indices:
+                first, second, kind = _pack_state(new_states[index], hidden)
+                packed.extend((first, second))
+                kinds.append(kind)
+            out_kinds = tuple(self.layers[index].kind for index in indices)
+
+            def run(value, *flat, indices=indices, kinds=tuple(kinds), offset=offset):
+                local = [_unpack_state(kinds[i], flat[2 * i], flat[2 * i + 1]) for i in range(len(indices))]
+                for slot, index in enumerate(indices):
+                    value, local[slot] = self.layers[index](value, local[slot], offset)
+                result = [value]
+                for state in local:
+                    first, second, _kind = _pack_state(state, value)
+                    result.extend((first, second))
+                return tuple(result)
+
+            result = (
+                activation_checkpoint(run, hidden, *packed, use_te=te)
+                if use_checkpoint
+                else run(hidden, *packed)
+            )
+            hidden = result[0]
+            for slot, index in enumerate(indices):
+                new_states[index] = _unpack_state(out_kinds[slot], result[1 + 2 * slot], result[2 + 2 * slot])
+        return hidden, new_states
 
     def iter_logits(self, hidden):
         for part in hidden.split(self.training_config.loss_chunk_size, dim=1):
@@ -184,16 +211,46 @@ class ShinraForCausalLM(nn.Module):
         action_mask,
         action_type,
         delta_t,
-        horizon,
         *,
         cache=None,
         use_cache=False,
+        previous_state=None,
     ):
-        slots = self.world.observe(observations)
-        conditioned = self.world.condition(slots, actions, action_mask, action_type, delta_t, horizon)
+        """observation + previous slots + action + Δt → next slots and all horizon heads.
+
+        Training keeps the next state in the autograd graph. Inference cache stores a
+        detached copy and never writes back into the source cache.
+        """
+        if previous_state is None and cache is not None:
+            previous_state = cache.world.get("slots")
+        slots = self.world.observe(observations, previous_state)
+        conditioned = self.world.condition(slots, actions, action_mask, action_type, delta_t)
         embeds = self.multimodal.interfaces["state"].encode(conditioned)
-        result = self(inputs_embeds=embeds, cache=cache, use_cache=use_cache or cache is not None)
+        inference = not torch.is_grad_enabled() and (use_cache or cache is not None)
+        result = self(inputs_embeds=embeds, cache=cache if inference else None, use_cache=inference)
         latent = self.multimodal.interfaces["state"].decode(result.hidden_states)
         if result.cache is not None:
             result.cache.world["slots"] = latent.detach()
-        return self.world.predict(latent), result.cache
+        prediction = self.world.predict(latent, delta_t)
+        prediction["next_state"] = latent
+        return prediction, result.cache
+
+
+def _pack_state(state, like):
+    if state is None:
+        return like.new_zeros(1), like.new_zeros(1), "none"
+    if isinstance(state, MemoryState):
+        return state.matrix, state.conv, "memory"
+    if isinstance(state, GlobalKV):
+        return state.key, state.value, "global"
+    raise TypeError("Unknown backbone state")
+
+
+def _unpack_state(kind, first, second):
+    if kind == "none":
+        return None
+    if kind == "memory":
+        return MemoryState(first, second)
+    if kind == "global":
+        return GlobalKV(first, second)
+    raise TypeError("Unknown backbone state")

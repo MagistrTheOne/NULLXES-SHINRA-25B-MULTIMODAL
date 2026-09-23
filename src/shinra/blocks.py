@@ -41,7 +41,9 @@ class ShinraBlock(nn.Module):
         training = training or ShinraTrainingConfig()
         self.norm1, self.norm2 = RMSNorm(c.hidden_size, c.norm_eps), RMSNorm(c.hidden_size, c.norm_eps)
         self.mixer = (
-            ShinraMemoryMixer(c, runtime, training) if kind == "memory" else ShinraGlobalAttention(c, runtime)
+            ShinraMemoryMixer(c, runtime, training)
+            if kind == "memory"
+            else ShinraGlobalAttention(c, runtime, training)
         )
         self.mlp = SwiGLU(c.hidden_size, c.intermediate_size, training.mlp_chunk_size)
 

@@ -60,10 +60,10 @@ For each token x and head:
     read = transpose(state)*q
     y = Wo * (flatten(per_head_RMSNorm(read)) * SiLU(W_output_gate*x))
 
-State is [batch,32,128,128], FP32. Reference and optimized paths have the same
-declared operation: FLA receives normalized Q/K, log-decay, post-sigmoid beta and
-scale=1. Only `fla.ops.kda.chunk_kda` is imported. GPU parity is still unqualified;
-we do not replace that test with a mocked backend.
+State is [batch,32,128,128], FP32. The only implemented backend is the reference
+recurrence above. `fla.ops.kda.chunk_kda` was not shown to be the same update, so
+`memory_backend=auto` does not call it. An accelerated kernel can be added only
+after output, final state and gradient parity against this equation.
 
 For unit k and beta in [0,1], the homogeneous transition `(I-beta*k*kT)*D`
 has spectral norm <=1 when all diagonal D entries are in (0,1]. This does not
@@ -178,11 +178,12 @@ All are Tensor-Core-friendly. 256 is a cost/capacity hypothesis requiring ablati
 
 ### Training segment 8192
 
-Renamed to `ShinraTrainingConfig.memory_train_segment_size`. Each segment receives
-the previous final matrix and returns a differentiable next matrix. There is no
-reset or detach at a segment boundary. `memory_state_reset=sequence_boundary` is
-the architectural rule. Numerical tests compare values, final state and every
-gradient across segment sizes 1,3,5,7 versus an unsplit sequence.
+Renamed to `ShinraTrainingConfig.memory_train_segment_size`. Each chunk projects,
+convolves, gates and scans only its own tokens, then carries the matrix and the
+kernel-1 convolution tail. There is no reset or detach at a chunk boundary.
+`memory_state_reset=sequence_boundary` is the architectural rule. Numerical tests
+compare values, matrix, convolution state and gradients across chunk sizes and
+across separate forward calls.
 
 One FP32 state per memory layer =2MiB; all 32 =64MiB. At length 327680, retaining
 40 segment boundary sets costs 2.5GiB, versus 160GiB if every 128-token chunk boundary

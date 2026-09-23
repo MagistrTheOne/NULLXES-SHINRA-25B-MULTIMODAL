@@ -24,20 +24,31 @@ def unpatchify(tokens, height, width, patch):
 
 
 class ShinraImageFrontend(nn.Module):
-    def __init__(self, c):
+    def __init__(self, c, runtime=None):
         super().__init__()
         self.config = c
+        attention = {
+            "runtime": runtime,
+            "rope_theta": c.rope_theta,
+            "spatial_rope_theta": c.spatial_rope_theta,
+        }
         self.patch = nn.Linear(3 * c.patch_size**2, c.visual_dim, bias=False)
         self.layers = nn.ModuleList(
             [
-                FrontendBlock(c.visual_dim, c.visual_ffn, c.visual_heads, c.norm_eps)
+                FrontendBlock(c.visual_dim, c.visual_ffn, c.visual_heads, c.norm_eps, **attention)
                 for _ in range(c.visual_layers)
             ]
         )
         self.norm = RMSNorm(c.visual_dim, c.norm_eps)
         self.resample_in = nn.Linear(c.visual_dim, c.latent_dim, bias=False)
         self.resampler = Resampler(
-            c.latent_dim, c.latent_ffn, c.latent_heads, c.resampler_layers, c.max_visual_latents, c.norm_eps
+            c.latent_dim,
+            c.latent_ffn,
+            c.latent_heads,
+            c.resampler_layers,
+            c.max_visual_latents,
+            c.norm_eps,
+            **attention,
         )
 
     def forward(self, images, latent_count=None):
@@ -50,21 +61,22 @@ class ShinraImageFrontend(nn.Module):
             torch.arange(rows, device=x.device), torch.arange(cols, device=x.device), indexing="ij"
         )
         xy = torch.stack((xx, yy), -1).reshape(1, -1, 2).expand(x.shape[0], -1, -1)
+        window, cadence = c.visual_window, c.visual_global_cadence
         for index, layer in enumerate(self.layers):
-            # Frame-global every fourth block; other blocks use 16x16 spatial windows.
-            if index % 4 == 3 or (rows <= 16 and cols <= 16):
+            # Global blocks sit on the configured cadence. Other blocks use spatial windows.
+            if index % cadence == cadence - 1 or (rows <= window and cols <= window):
                 x, _ = layer(x, positions=xy)
             else:
                 grid = x.reshape(x.shape[0], rows, cols, -1)
                 coords = xy.reshape(x.shape[0], rows, cols, 2)
                 bands = []
-                for row in range(0, rows, 16):
+                for row in range(0, rows, window):
                     cells = []
-                    for col in range(0, cols, 16):
-                        tile = grid[:, row : row + 16, col : col + 16]
+                    for col in range(0, cols, window):
+                        tile = grid[:, row : row + window, col : col + window]
                         result, _ = layer(
                             tile.flatten(1, 2),
-                            positions=coords[:, row : row + 16, col : col + 16].flatten(1, 2),
+                            positions=coords[:, row : row + window, col : col + window].flatten(1, 2),
                         )
                         cells.append(result.reshape_as(tile))
                     bands.append(torch.cat(cells, dim=2))

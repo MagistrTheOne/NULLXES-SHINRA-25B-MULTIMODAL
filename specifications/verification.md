@@ -2,9 +2,9 @@
 
 ## Executed in this implementation session
 
-- Final result: **42 CPU tests passed** (pytest), Ruff lint passed, all 44 Python
-  files passed formatting checks and compileall. Environment: Python 3.11,
-  environment-provided PyTorch 2.14.0+cu126. No CUDA workload was used.
+- Final result: **51 CPU tests passed** (pytest), Ruff lint passed, Ruff format
+  check passed, and compileall passed. No CUDA workload was used. The duration of
+  that CPU run is test time, not model throughput.
 - Allocation-free audit independently returned total 25,177,818,880, core
   23,413,976,064, multimodal 1,763,842,816 and context 327680. `torch` was absent
   from `sys.modules` after this audit.
@@ -16,11 +16,12 @@
   dimensions; short history slices cannot retain an entire prefill allocation.
 - HF adapter/native output equality, greedy cached/manual generation equality,
   offloaded/model gradient equivalence and counterfactual cache isolation.
-- CFG review verification: exact named memory matrix ledger, segment-boundary
-  output/state/gradient equivalence, architecture/runtime/training separation,
-  CPU-only dispatch selection, missing-PyTorch diagnostics and duration-dependent
-  audio latents exceeding the learned query-bank size. Last full run: 42 passed
-  in 108.96 seconds on 2026-09-22; this is test duration, not model throughput.
+- CFG and execution-contract verification: memory matrix/convolution/gradient
+  equivalence across chunks and across separate forwards, reference-only memory
+  dispatch, positional fingerprint, production-profile rejection of topology
+  drift, world-state carry, multi-horizon outputs, counterfactual branch
+  isolation, and audio/video geometry. Last full run: 51 passed on 2026-09-24.
+  That duration is test time, not model throughput.
 
 No optimizer update on a model, training run, GPU query/workload, distributed job,
 dataset download, pretrained checkpoint download or full-size model initialization

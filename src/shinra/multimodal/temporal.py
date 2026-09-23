@@ -5,13 +5,21 @@ from ..positions import fourier_features
 
 
 class ShinraTemporalModule(nn.Module):
-    def __init__(self, c):
+    def __init__(self, c, runtime=None):
         super().__init__()
         self.features = c.time_features
         self.time = nn.Linear(c.time_features, c.latent_dim, bias=False)
         self.layers = nn.ModuleList(
             [
-                FrontendBlock(c.latent_dim, c.latent_ffn, c.latent_heads, c.norm_eps)
+                FrontendBlock(
+                    c.latent_dim,
+                    c.latent_ffn,
+                    c.latent_heads,
+                    c.norm_eps,
+                    runtime=runtime,
+                    rope_theta=c.temporal_rope_theta,
+                    spatial_rope_theta=c.spatial_rope_theta,
+                )
                 for _ in range(c.temporal_layers)
             ]
         )
